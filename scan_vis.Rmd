@@ -1,0 +1,109 @@
+---
+title: "S::CAN'"
+author: "CLB"
+date: "10/31/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(tidyverse)
+library(styler)
+library(streamMetabolizer)
+library(dataRetrieval)
+library(rstan)
+library(chron)
+library(scales)
+library(unitted)
+library(knitr)
+library(xts)
+library(lubridate)
+library(dygraphs)
+library(data.table)
+library(ggpubr)
+library(ggthemes)
+library(Rmisc)
+#library(gtsummary)
+library(StreamLightUtils)
+library(StreamLight)
+library(ggspectra)
+library(pavo)
+```
+
+Read in s::can fingerprint
+```{r}
+scanDAT <- read_csv("~/Dropbox/AIMS/Konza/s-can/Konza_Fingerprint_20211022.csv", skip = 1, na = c("Aggregation:", "raw")) %>% 
+  dplyr::rename(DateTime = "Parameter:")
+
+
+names(scanDAT) <- str_replace_all(names(scanDAT), " nm", "")
+scanDAT <- scanDAT %>%  dplyr::select(-`Measured status`)
+scanDAT <- scanDAT %>%  dplyr::select(DateTime:`720.00`)
+scanDAT <- na.omit(scanDAT)
+
+
+scan_long <- scanDAT %>%
+  pivot_longer(!DateTime, names_to = "wl", values_to = "abs")
+
+scan_long$wl <- as.numeric(scan_long$wl)
+scan_long$Month <- month(scan_long$DateTime)
+
+```
+
+```{r}
+Scan1Day <- dplyr::filter(scan_long, DateTime == as.POSIXct("2021-08-08 08:13:52"))
+
+scan_long$DateTime <- as.character(scan_long$DateTime)
+
+ggplot(scan_long, aes(x = wl, y = abs)) + 
+  geom_line() +
+  theme_bw() +
+  facet_wrap("Month", scales = "free")
+  
+```
+
+```{r}
+scan_long$Date <- as.Date(scan_long$DateTime)
+scan_long$Month <- month(scan_long$DateTime)
+#scan_long$DateTime <- as.numeric(scan_long$DateTime)
+#testDAT <- as.rspec(scan_long)
+
+
+DayAvg <- group_by(scan_long, Date, wl) %>%
+   dplyr::summarise(abs = mean(abs))
+
+
+ #plot(testDAT, col = rainbow(3))
+```
+
+```{r}
+scanTrans <- t(scanDAT)
+scanTrans <- data.frame(scanTrans)
+names(scanTrans) <- scanTrans[1, ]
+scanTrans <- scanTrans[-1, ]
+scanTrans <- tibble::rownames_to_column(scanTrans, "wl") # Apply rownames_to_column
+
+
+scanTrans[] <- lapply(scanTrans, as.numeric)
+
+scanTrans <- as.rspec(scanTrans)
+#> wavelengths found in column 1
+
+plot(scanTrans, ylab = "Absorbance", col = rainbow(10), ylim= c(0,250))
+
+```
+```{r}
+p <- dygraph(DayAvg) %>%
+  dyOptions(labelsUTC = TRUE, fillGraph = TRUE, fillAlpha = 0.1, drawGrid = FALSE, colors = "#D8AE5A") %>%
+  dyRangeSelector() %>%
+  dyCrosshair(direction = "vertical") %>%
+  dyHighlight(highlightCircleSize = 5, highlightSeriesBackgroundAlpha = 0.2, hideOnMouseOut = FALSE) %>%
+  dyRoller(rollPeriod = 1)
+
+p
+```
+
+

@@ -1,0 +1,152 @@
+---
+title: "Konza Data"
+author: "CLB"
+date: "9/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load libraries
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(lubridate)
+library(dataRetrieval)
+library(scales)
+library(knitr)
+library(ContDataQC)
+library(data.table)
+library(rvest)
+library(XML)
+library(jsonlite)
+library(tidyjson)
+```
+
+Read in data
+```{r}
+KonzTest <- sapply(Sys.glob("~/Dropbox/AIMS/Konza/Konza_Data_2021*.csv"), fread, skip = 1, check.names = T, na.strings = c("V", "mA", "mBar", "C", "dB", "uS/cm", "%", "mg/L", "NTU", "RFU", "psi", "ft"), simplify = F) %>%
+  bind_rows(.id = "id") %>% 
+#  dplyr::select("Time.UTC.UTC.00.00", "Temperature":"Temperature.3") %>% 
+  dplyr::rename("UTC_DateTime" = "Time.UTC.UTC.00.00") %>% 
+  mutate(UTC_DateTime = mdy_hms(UTC_DateTime))
+
+glimpse(KonzTest)
+
+
+mean(KonzTest$Sp.Cond, na.rm = TRUE)
+
+avg <- group_by(KonzTest) %>%
+  dplyr::summarise(FDOM.RFU = mean(FDOM.RFU, na.rm =T))
+
+```
+
+
+Lets start checking out time series data
+```{r}
+#1. Temperature 
+
+ggplot(KonzTest, aes(UTC_DateTime, Temperature))+
+  geom_point()+
+  scale_x_datetime(date_breaks = "2 weeks", labels = date_format("%b-%d-%y"))+
+  theme_bw()
+
+```
+Lets get parameterID list
+```{r}
+#download.file("https://www.wqdatalive.com/api/v1/devices/{2629}/parameters?apiKey={3d1c7798749049d8907dda8391ca23e1}", "~/Dropbox/AIMS/Konza/ParamID.json", "curl")
+
+ParamIDList <- read_json("~/Dropbox/AIMS/Konza/ParamID.json")
+
+IDlist<- enframe(unlist(ParamIDList))
+
+IDwide <- pivot_wider(IDlist)
+
+
+IDnum <- IDwide$..JSON.parameters.id
+IDnum <- unlist(IDnum)
+
+IDname <- IDwide$..JSON.parameters.name
+IDname <- unlist(IDname)
+
+
+dictionary <- tibble::tibble(
+  new = IDname,
+  old = IDnum
+)
+
+#Rename temperature
+dictionary[dictionary$old==51787, "new"] <- "Temp.1"
+dictionary[dictionary$old==51797, "new"] <- "Temp.2"
+dictionary[dictionary$old==51801, "new"] <- "Temp.3"
+dictionary[dictionary$old==51808, "new"] <- "Temp.4"
+
+#Rename Pressure
+dictionary[dictionary$old==51796, "new"] <- "Pressure.1"
+dictionary[dictionary$old==51800, "new"] <- "Pressure.2"
+
+#Rename level
+dictionary[dictionary$old==51798, "new"] <- "Level.1"
+dictionary[dictionary$old==51802, "new"] <- "Level.2"
+
+#Rename input voltage
+dictionary[dictionary$old==51799, "new"] <- "InputVolt.1"
+dictionary[dictionary$old==51803, "new"] <- "InputVolt.2"
+
+Params <- data.frame(ParamID = IDnum, Name = IDname)
+
+```
+
+
+Lets try to automate WQDataLive downloading
+```{r}
+download.file("https://www.wqdatalive.com/api/v1/devices/{2629}/parameters/data?apiKey={3d1c7798749049d8907dda8391ca23e1}&from=2021-08-01%2010:00:00&to=2021-08-31%2010:00:00", "~/Dropbox/AIMS/Konza/testDL.json", "curl")
+
+
+download.file("https://www.wqdatalive.com/api/v1/devices/{2629}/parameters/{51789}/data/latest?apiKey={3d1c7798749049d8907dda8391ca23e1}", "~/Dropbox/testCond.json", "curl")
+
+
+kontest <- read_json("~/Dropbox/testCond.json")
+
+
+Konza <- read_json("~/Dropbox/AIMS/Konza/testDL.json")
+
+Konza %>% gather_object %>% json_types %>% count(name, type)
+
+tidyTest <- Konza %>% enter_object(data) %>% gather_array %>% spread_all
+
+tidyTest <- unlist(tidyTest$..JSON)
+
+
+data_raw <- enframe(unlist(Konza))
+
+data_wide <- pivot_wider(data_raw)
+
+ParamID <- data_wide$..JSON.data.values.parameterId
+ParamID <- unlist(ParamID)
+
+ParamID <- data_wide$..JSON.data.values.parameterId
+ParamID <- unlist(ParamID)
+
+Values <- data_wide$..JSON.data.values.value
+Values <- unlist(Values)
+
+Dates <- unlist(data_wide$..JSON.data.timestamp)
+
+
+Konza <- data.frame(DateTime = Dates, ParamID = ParamID, Values = Values)
+
+dat <- merge(Konza, Params, by = "ParamID")
+dat <- pivot_wider(dat, names_from = Name, values_from = Values)
+
+KonzaWide <- tidyr::pivot_wider(Konza, names_from = ParamID, values_from = Values)
+
+vars_found_in_dictionary <- intersect(names(KonzaWide), unique(dictionary$old))
+temp_dict <- dictionary %>% dplyr::filter(old %in% vars_found_in_dictionary) %>% tibble::deframe()
+KonzaData <- KonzaWide %>% dplyr::rename(!!temp_dict)
+
+```
+
+
+

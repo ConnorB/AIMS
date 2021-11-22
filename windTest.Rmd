@@ -1,0 +1,119 @@
+---
+title: "Untitled"
+author: "CLB"
+date: "10/25/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(tidyverse)
+library(styler)
+library(streamMetabolizer)
+library(dataRetrieval)
+library(rstan)
+library(chron)
+library(scales)
+library(unitted)
+library(knitr)
+library(xts)
+library(lubridate)
+library(dygraphs)
+library(zoo)
+library(data.table)
+library(ggpubr)
+library(ggthemes)
+library(Rmisc)
+library(gtsummary)
+library(lavaan)
+library(semPlot)
+library(StreamLightUtils)
+library(StreamLight)
+library(neonUtilities)
+library(LakeMetabolizer)
+```
+
+Uncomment if updating data from NEON
+
+<!-- Lets get Wind data from NEON for Blues creek, only run when downloading new data. -->
+<!-- ```{r} -->
+<!-- zipsByProduct(dpID = "DP1.00001.001", -->
+<!--                          site = "KONZ", -->
+<!--                          savepath = "~/Dropbox/AIMS/KingsCreek/NEON", -->
+<!--                          check.size = F) -->
+
+<!-- ``` -->
+
+<!-- Pull monthly tables into one file -->
+<!-- ```{r} -->
+<!-- stackByTable("~/Dropbox/AIMS/KingsCreek/NEON/filesToStack00001") -->
+<!-- ``` -->
+
+```{r}
+WindSpeed <- readTableNEON("~/Dropbox/AIMS/KingsCreek/NEON/filesToStack00001/stackedFiles/2DWSD_30min.csv", "~/Dropbox/AIMS/KingsCreek/NEON/filesToStack00001/stackedFiles/variables_00001.csv")
+```
+
+
+```{r}
+KonzaWind <- dplyr::select(WindSpeed, startDateTime, windSpeedMean, windSpeedFinalQF, verticalPosition) %>% 
+  dplyr::rename(wnd = windSpeedMean) %>% 
+  dplyr::rename(DateTime = startDateTime) %>% 
+  dplyr::filter(windSpeedFinalQF == "0") %>% 
+  dplyr::filter(verticalPosition == "030") %>% 
+  dplyr::select(DateTime, wnd) %>% 
+  drop_na(wnd)
+rm(WindSpeed)
+
+KonzaWind$date <- as.Date(KonzaWind$DateTime)
+KonzaWind <- KonzaWind[KonzaWind$Date >= "2018-09-01" & KonzaWind$Date <= "2019-07-23",]
+
+KonzaWind <- KonzaWind %>% dplyr::select(DateTime, wnd)
+
+u10 <- wind.scale.base(KonzaWind$wnd, 3)
+KonzaWind <- rmv.vars(KonzaWind, 'wnd', ignore.offset=TRUE) #drop old wind speed column
+#KonzaWind10 <- merge(KonzaWind, u10)                          #merge new u10 into big dataset  
+
+testDF <- data.frame(datetime = KonzaWind, wnd = u10)
+
+#KonzaWind10 <- dplyr::rename(KonzaWind10, wnd = y)
+#KonzaWind10 <- dplyr::rename(KonzaWind10, datetime = x)
+
+
+testGAS <- k.cole(testDF)
+hist(testGAS$k600)
+hist(log(testGAS$k600))
+GasLog <- log(testGAS$k600)
+```
+
+Kings Q
+```{r}
+csd_continuousDischarge <- readTableNEON("~/Dropbox/AIMS/KingsCreek/NEON/filesToStack00130/stackedFiles/csd_continuousDischarge.csv", "~/Dropbox/AIMS/KingsCreek/NEON/filesToStack00130/stackedFiles/variables_00130.csv")
+
+
+kingQ <- dplyr::select(csd_continuousDischarge, endDate, maxpostDischarge, stationHorizontalID, dischargeFinalQF) %>% 
+  dplyr::rename(Q = maxpostDischarge) %>% 
+  dplyr::rename(datetime = endDate) %>% 
+  dplyr::filter(stationHorizontalID == "101") %>% 
+  dplyr::filter(dischargeFinalQF == "0")
+
+kingQ$Q <- kingQ$Q/1000 #Convert from L/s to CMS
+
+
+AllDat <- left_join(kingQ, testGAS)
+AllDat <- drop_na(AllDat)
+
+plot(AllDat$Q, AllDat$k600)
+
+testGAS <-  testGAS %>%  dplyr::rename(K600.daily = k600)
+testGAS$date <- date(testGAS$datetime)
+
+Kday <- dplyr::group_by(testGAS, date) %>% 
+  dplyr::summarise(K600.daily = mean(K600.daily))
+
+Kday <- as.data.frame(Kday)
+
+```
+

@@ -1,0 +1,108 @@
+---
+title: "USGS Discharge"
+author: "CLB"
+date: "3/9/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load libraries
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(lubridate)
+library(dataRetrieval)
+library(scales)
+library(knitr)
+library(ContDataQC)
+```
+Site number is USGS gage number.
+
+```{r}
+siteNumbers <- c("06879650")
+```
+
+Sets USGS parameter code 00060 (discharge), 00065 (gage height), 00010 (temperature), etc.
+for a full list of parameters visit: https://help.waterdata.usgs.gov/code/parameter_cd_query?fmt=rdb&inline=true&group_cd=%
+
+not all parameters are available for all sites
+```{r}
+parameterCd <- c("00060", "00065") #discharge and gage height
+
+#Days needed
+startDate <- "2021-01-01"
+endDate <- today("UTC") #today returns current data in YYYY-MM-DD (from lubridate), "UTC" is the timezone
+
+#Get daily values from USGS
+daily <- readNWISdv(siteNumbers, parameterCd, startDate, endDate)
+names(daily)[4] <- "Q"
+
+daily$Q <- (daily$Q * 0.028316847) # converts cfs to cms
+
+#Get 15 min values from USGS
+discharge <- readNWISuv(siteNumbers, parameterCd, startDate, endDate)
+names(discharge)[4] <- "Q"
+
+discharge$Q <- (discharge$Q * 0.028316847) # converts cfs to cms
+
+```
+
+```{r}
+daily$site_no <- as.numeric(daily$site_no)
+discharge$site_no <- as.numeric(discharge$site_no)
+
+daily$Site <- "Kings Creek"
+discharge$Site <- "Kings Creek"
+
+```
+
+```{r}
+daily$Year <- year(daily$Date)
+
+
+avg <- group_by(daily, Year) %>%
+  dplyr::summarise(Qcms = mean(Q))
+
+kable(avg)
+```
+
+
+Daily Discharge CMS
+```{r}
+King_Q <- dplyr::select(daily, Date, Q, Site)
+
+
+ggplot(King_Q, aes(Date, Q))+
+  geom_line() +
+  labs(title = "Kings Creek Daily Discharge",
+  y = expression(Discharge (m^3/s)))+
+  theme_bw()+
+  theme(text = element_text(size = 15))+
+  scale_x_date(labels = date_format("%b%y"))
+```
+15 min Discharge
+```{r}
+ggplot(discharge, aes(dateTime, Q))+
+  geom_line() +
+  labs(title = "Kings Creek 15 Minute Discharge",
+  y = expression(Discharge (m^3/s)))+
+  theme_bw()
+```
+
+
+
+```{r}
+daily$Yr_Month <- strftime(daily$Date, format="%Y-%m")
+Flashiness <- group_by(daily, Site, month = floor_date(Date, unit = "month")) %>%
+  dplyr::summarise(RBI = RBIcalc(Q))
+
+ggplot(Flashiness, aes(month, RBI))+
+  geom_point() 
+  #scale_x_date(NULL, date_labels = "%b %y", breaks = "month")+
+  #facet_wrap(~Site, ncol=3, scales= "fixed")
+```
+
+
+

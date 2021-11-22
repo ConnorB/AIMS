@@ -1,0 +1,106 @@
+---
+title: "Untitled"
+author: "CLB"
+date: "11/9/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(tidyverse)
+library(styler)
+library(streamMetabolizer)
+library(dataRetrieval)
+library(rstan)
+library(chron)
+library(scales)
+library(unitted)
+library(knitr)
+library(xts)
+library(lubridate)
+library(dygraphs)
+library(data.table)
+library(ggpubr)
+library(ggthemes)
+library(Rmisc)
+#library(gtsummary)
+library(StreamLightUtils)
+library(StreamLight)
+```
+
+```{r}
+Gage <- read_csv("~/Dropbox/AIMS/USGS/GageNum.csv")
+
+WD_Gage <- Gage %>%  dplyr::select(gage_ID, EPA_Ecoregion_Name, region) %>% 
+  dplyr::filter(region == "Western Desert")
+
+WM_Gage <- Gage %>%  dplyr::select(gage_ID, EPA_Ecoregion_Name, region) %>% 
+  dplyr::filter(region == "Western Mountains")
+
+NGP_Gage <- Gage %>%  dplyr::select(gage_ID, EPA_Ecoregion_Name, region) %>% 
+  dplyr::filter(region == "North Great Plains")
+
+SGP_Gage <- Gage %>%  dplyr::select(gage_ID, EPA_Ecoregion_Name, region) %>% 
+  dplyr::filter(region == "South Great Plains")
+
+EF_Gage <- Gage %>%  dplyr::select(gage_ID, EPA_Ecoregion_Name, region) %>% 
+  dplyr::filter(region == "Eastern Forests")
+
+MC_Gage <- Gage %>%  dplyr::select(gage_ID, EPA_Ecoregion_Name, region) %>% 
+  dplyr::filter(region == "Mediterranean California")
+
+parameterCd <- c("00060", "00300") #discharge and DO
+
+#Days needed
+#startDate <- today("UTC")-365
+#endDate <- today("UTC") #today returns current data in YYYY-MM-DD (from lubridate), "UTC" is the timezone
+
+# WD <- readNWISuv(WD_Gage$gage_ID, parameterCd, startDate, endDate)
+# WM <- readNWISuv(WM_Gage$gage_ID, parameterCd, startDate, endDate)
+# SGP <- readNWISuv(SGP_Gage$gage_ID, parameterCd, startDate, endDate)
+# NGP <- readNWISuv(NGP_Gage$gage_ID, parameterCd, startDate, endDate)
+# EF <- readNWISuv(EF_Gage$gage_ID, parameterCd, startDate, endDate)
+# MC <- readNWISuv(MC_Gage$gage_ID, parameterCd, startDate, endDate)
+# 
+# All <- bind_rows(WD, WM, SGP, NGP, EF, MC)
+# names(All)[4] <- "Q"
+# names(All)[11] <- "DO"
+# names(All)[19] <- "DO2"
+# 
+# All_Grouped <- All %>%  group_by(site_no) %>%
+#   dplyr::summarise(count = n(), Q = mean(Q, na.rm = T), DO = mean(DO, na.rm = T), DO2 = mean(DO2, na.rm = T))
+```
+
+```{r}
+
+startDate <- "2000-01-01"
+endDate <- today("UTC") 
+
+USGSsiteInfo <- readNWISsite(siteNumbers = Gage$gage_ID)
+
+USGSParam <- whatNWISdata(siteNumbers = Gage$gage_ID, service = "dv")
+
+GageDO <- USGSParam %>%  dplyr::select(site_no, station_nm, parm_cd) %>% 
+  dplyr::filter(parm_cd == "00300")
+
+GageDO <- unique(GageDO)
+
+
+intGages <- readNWISuv(GageDO$site_no, parameterCd, startDate, endDate)
+intGages <- renameNWISColumns(intGages)
+```
+
+
+```{r}
+ggplot(intGages, aes(dateTime, DO_Inst))+
+  geom_line() +
+  #labs(title = "Daily Discharge",
+  #y = expression(Discharge (m^3/s)))+
+  theme_bw()+
+  theme(text = element_text(size = 15))+
+  facet_wrap(~site_no, nrow = 2, scales= "free")
+```
+

@@ -1,0 +1,911 @@
+---
+title: "Kings Creek Metabolism"
+author: "CLB"
+date: "9/2/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(tidyverse)
+library(styler)
+library(streamMetabolizer)
+library(dataRetrieval)
+library(rstan)
+library(chron)
+library(scales)
+library(unitted)
+library(knitr)
+library(xts)
+library(lubridate)
+library(dygraphs)
+library(zoo)
+library(data.table)
+library(ggpubr)
+library(ggthemes)
+library(Rmisc)
+library(gtsummary)
+library(lavaan)
+library(semPlot)
+library(StreamLightUtils)
+library(StreamLight)
+library(neonUtilities)
+library(LakeMetabolizer)
+```
+Coordinates for kings creek from neon site
+```{r}
+Site <- c("King")
+
+Lat <- c(39.105061)
+
+Long <- c(-96.603829)
+
+LatLong <- data.frame(Site = Site, Lat = Lat, Long = Long)
+```
+
+
+
+<!-- Lets get DO data from NEON for kings creek, only run when downloading new data. -->
+<!-- ```{r} -->
+<!-- zipsByProduct(dpID = "DP1.20288.001", -->
+<!--                          site = "KING", -->
+<!--                          savepath = "~/Dropbox/AIMS/KingsCreek/NEON", -->
+<!--                          check.size = F) -->
+
+<!-- zipsByProduct(dpID = "DP1.20042.001", -->
+<!--                          site = "KING", -->
+<!--                          savepath = "~/Dropbox/AIMS/KingsCreek/NEON", -->
+<!--                          check.size = F) -->
+
+<!-- zipsByProduct(dpID = "DP1.20053.001", -->
+<!--                          site = "KING", -->
+<!--                          savepath = "~/Dropbox/AIMS/KingsCreek/NEON", -->
+<!--                          check.size = F) -->
+
+<!-- zipsByProduct(dpID = "DP4.00130.001", -->
+<!--                          site = "KING", -->
+<!--                          savepath = "~/Dropbox/AIMS/KingsCreek/NEON", -->
+<!--                          check.size = F) -->
+
+<!-- zipsByProduct(dpID = "DP1.00004.001", -->
+<!--                          site = "KING", -->
+<!--                          savepath = "~/Dropbox/AIMS/KingsCreek/NEON", -->
+<!--                          check.size = F) -->
+
+<!-- ``` -->
+
+```{r}
+waq_instantaneous <- readTableNEON("~/Dropbox/AIMS/KingsCreek/NEON/filesToStack20288/stackedFiles/waq_instantaneous.csv", "~/Dropbox/AIMS/KingsCreek/NEON/filesToStack20288/stackedFiles/variables_20288.csv")
+PARWS_5min <- readTableNEON("~/Dropbox/AIMS/KingsCreek/NEON/filesToStack20042/stackedFiles/PARWS_5min.csv", "~/Dropbox/AIMS/KingsCreek/NEON/filesToStack20042/stackedFiles/variables_20042.csv")
+TSW_5min <- readTableNEON("~/Dropbox/AIMS/KingsCreek/NEON/filesToStack20053/stackedFiles/TSW_5min.csv", "~/Dropbox/AIMS/KingsCreek/NEON/filesToStack20053/stackedFiles/variables_20053.csv")
+csd_continuousDischarge <- readTableNEON("~/Dropbox/AIMS/KingsCreek/NEON/filesToStack00130/stackedFiles/csd_continuousDischarge.csv", "~/Dropbox/AIMS/KingsCreek/NEON/filesToStack00130/stackedFiles/variables_00130.csv")
+BP_1min <- readTableNEON("~/Dropbox/AIMS/KingsCreek/NEON/filesToStack00004/stackedFiles/BP_1min.csv", "~/Dropbox/AIMS/KingsCreek/NEON/filesToStack00004/stackedFiles/variables_00004.csv")
+WindSpeed <- readTableNEON("~/Dropbox/AIMS/KingsCreek/NEON/filesToStack00001/stackedFiles/2DWSD_30min.csv", "~/Dropbox/AIMS/KingsCreek/NEON/filesToStack00001/stackedFiles/variables_00001.csv")
+
+```
+
+
+Pull out DO and PAR from NEON datafiles
+```{r}
+kingYSI <- dplyr::select(waq_instantaneous, startDateTime, dissolvedOxygen, dissolvedOxygenFinalQF, horizontalPosition, specificConductance, specificCondFinalQF) %>% 
+  dplyr::rename(DO.obs = dissolvedOxygen) %>% 
+  dplyr::rename(DateTime = startDateTime) %>% 
+  dplyr::filter(horizontalPosition == "101") %>% 
+  dplyr::filter(dissolvedOxygenFinalQF == "0") %>% 
+  dplyr::filter(specificCondFinalQF == "0") %>% 
+  drop_na(DO.obs)
+
+kingPAR <- dplyr::select(PARWS_5min, startDateTime, PARMean, horizontalPosition, PARFinalQF) %>% 
+  dplyr::rename(Light = PARMean) %>% 
+  dplyr::rename(DateTime = startDateTime) %>% 
+  dplyr::filter(horizontalPosition == "101") %>% 
+  dplyr::filter(PARFinalQF == "0")
+
+kingTemp <- dplyr::select(TSW_5min, startDateTime, surfWaterTempMean, finalQF, horizontalPosition) %>% 
+  dplyr::rename(Temp = surfWaterTempMean) %>% 
+  dplyr::rename(DateTime = startDateTime) %>% 
+  dplyr::filter(finalQF == "0") %>% 
+  dplyr::filter(horizontalPosition == "101")
+
+kingQ <- dplyr::select(csd_continuousDischarge, endDate, maxpostDischarge, stationHorizontalID, dischargeFinalQF) %>% 
+  dplyr::rename(Q = maxpostDischarge) %>% 
+  dplyr::rename(DateTime = endDate) %>% 
+  dplyr::filter(stationHorizontalID == "101") %>% 
+  dplyr::filter(dischargeFinalQF == "0")
+
+kingQ$Q <- kingQ$Q/1000 #Convert from L/s to CMS
+
+kingBP <- dplyr::select(BP_1min, startDateTime, corPres) %>% 
+  dplyr::rename(BP = corPres) %>% 
+  dplyr::rename(DateTime = startDateTime)
+
+kingBP$BP <- kingBP$BP * 10 # convert from kilkopascals to mb
+
+KonzaWind <- dplyr::select(WindSpeed, startDateTime, windSpeedMean, windSpeedFinalQF, verticalPosition) %>% 
+  dplyr::rename(wnd = windSpeedMean) %>% 
+  dplyr::rename(DateTime = startDateTime) %>% 
+  dplyr::filter(windSpeedFinalQF == "0") %>% 
+  dplyr::filter(verticalPosition == "030") %>% 
+  dplyr::select(DateTime, wnd) %>% 
+  drop_na(wnd)
+
+
+rm(waq_instantaneous, PARWS_5min, TSW_5min, csd_continuousDischarge, BP_1min, WindSpeed)
+```
+
+Quickly plot everything
+```{r}
+ggplot(kingYSI, aes(DateTime, DO.obs)) +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  theme_bw()
+
+ggplot(kingYSI, aes(DateTime, specificConductance)) +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  theme_bw()
+
+ggplot(kingPAR, aes(DateTime, Light)) +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  theme_bw()
+
+ggplot(kingTemp, aes(DateTime, Temp)) +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  theme_bw()
+
+ggplot(kingQ, aes(DateTime, Q)) +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  theme_bw()
+
+ggplot(kingBP, aes(DateTime, BP)) +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  theme_bw()
+
+ggplot(KonzaWind, aes(DateTime, wnd)) +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  theme_bw()
+```
+
+
+Merge data files into one df
+```{r}
+rawDAT <- kingYSI %>%
+  full_join(kingBP, by = "DateTime") %>%
+  full_join(kingQ, by = "DateTime") %>% 
+  full_join(kingTemp, by = "DateTime") %>% 
+  full_join(KonzaWind, by = "DateTime")
+```
+
+
+This is our 'master' template for time and date that we will want to fill in with data where the times do not exactly match even time intervals
+
+```{r}
+#Date and time sequence running every 5 minutes
+date_seq <- seq(as.POSIXct("2016-12-07 18:05:00", tz = "UTC"),
+  as.POSIXct("2021-07-31 23:50:00", tz = "UTC"),
+  by = ("5 min")
+)
+
+
+# simply a data frame of date and time running the course of the data set
+min.fill <- data.frame(DateTime = date_seq)
+
+#Column of solar time for metabolizer
+min.fill$solar.time <- calc_solar_time(min.fill$DateTime, longitude = (LatLong$Long[LatLong$Site =="King"])) 
+```
+
+
+Then, we merge the new min.fill data frame with the raw data
+```{r}
+rawDAT<- merge(rawDAT, min.fill, by = "DateTime", all = T)
+
+rawDAT$Unix2 <- as.numeric(rawDAT$DateTime)
+
+#rawDAT.DAT$CalcLight <- calc_light(all.DAT$solar.time, latitude = (LatLong$Lat[LatLong$Site == "King"]), longitude =  (LatLong$Long[LatLong$Site == "King"]), max.PAR = u(2326, "umol m^-2 s^-1"), attach.units = is.unitted(all.DAT$solar.time))
+
+#all.DAT <- all.DAT %>% mutate(MergeLight = coalesce(CalcLight, lag(Light)))
+
+# ggplot(all.DAT, aes(DateTime, CalcLight)) +
+#   geom_line(color = "darkgoldenrod1") +
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+#   scale_x_datetime(labels = date_format("%m/%d/%y %H:%M")) +
+#   ylab("PAR umol m-2 s-1") +
+#   theme_bw() +
+#   theme(axis.text = element_text(size = 10), axis.title = element_text(size = 12), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.text = element_text(size = 8))
+# 
+# ggplot(kingPAR, aes(DateTime, Light)) +
+#   geom_line(color = "darkgoldenrod1") +
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+#   scale_x_datetime(labels = date_format("%m/%d/%y %H:%M")) +
+#   ylab("PAR umol m-2 s-1") +
+#   theme_bw() +
+#   theme(axis.text = element_text(size = 10), axis.title = element_text(size = 12), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.text = element_text(size = 8))
+```
+
+To create a sequence to encompass the entire time-frame, we use the min and max numbers which will be used in the 'xout' below
+(use non-scientific for the end, otherwise we use a few data points)
+```{r}
+summary(rawDAT$Unix2)
+str(rawDAT)
+```
+
+We will use the time (Unix) to do a linear interporlaton between each point to estimate DO and temp at even time steps throughout the entire data set
+
+First, naming parameters for the approx function to approximate missing DO and temp data where the logger time shifted
+
+```{r}
+x <- rawDAT$Unix2
+a <- rawDAT$DO
+b <- rawDAT$Temp
+c <- rawDAT$BP
+d <- rawDAT$Q
+e <- rawDAT$wnd
+```
+
+interpret and plot the original and 'interpreted' data for raw DO data (I have the plotting here # out, but I check initially to make sure the approximated data is the same as the observed data)
+Dont use sci notation for the end, you'll lose some days
+```{r}
+# 1. DO
+interpDO <- approx(x = x, y = a, xout = 1.473e+09:1.628e+09 , method = "linear", rule = 2:2) # xout - estimated from summary(rawDAT$Unix2) above
+plot(rawDAT$Unix2, rawDAT$DO.obs)
+points(interpDO$x, interpDO$y, col = "green", type = "l")
+rm(a)
+gc()
+
+# 2. Water Temp
+interpTemp <- approx(x = x, y = b, xout = 1.473e+09:1.628e+09 , method = "linear", rule = 2:2)
+plot(rawDAT$Unix2, rawDAT$Temp)
+points(interpTemp$x, interpTemp$y, col = "blue", type = "l")
+rm(b)
+gc()
+# 3. BP
+interpBP <- approx(x = x, y = c, xout = 1.473e+09:1.628e+09 , method = "linear", rule = 2:2)
+plot(rawDAT$Unix2, rawDAT$BP)
+points(interpBP$x, interpBP$y, col = "blue", type = "l")
+rm(c)
+gc()
+# 4. Q
+interpQ <- approx(x = x, y = d, xout = 1.473e+09:1.628e+09 , method = "linear", rule = 2:2)
+plot(rawDAT$Unix2, rawDAT$Q)
+points(interpQ$x, interpQ$y, col = "blue", type = "l")
+rm(d)
+gc()
+
+interpWND <- approx(x = x, y = e, xout = 1.473e+09:1.628e+09 , method = "linear", rule = 2:2)
+plot(rawDAT$Unix2, rawDAT$wnd)
+points(interpWND$x, interpWND$y, col = "blue", type = "l")
+rm(e, x, date_seq)
+gc()
+```
+
+Next, put all DO data into 1 dataframe - using the DO, DOper, and Temp where the NA's (time shift) were filled in using the approx function
+```{r}
+DOinterp <- data.frame(Unix2 = interpDO$x, interpDO$y, interpTemp$y, interpTemp$y, interpBP$y, interpQ$y, interpWND$y)
+DOinterp$DateTime <- as.POSIXct(as.numeric(DOinterp$Unix2), origin = "1970-01-01", tz = "UTC")
+```
+
+Merge our interpreted data with the the data frame containing only the dates with even 5 minute time intervals
+```{r}
+oxy1 <- merge(DOinterp, min.fill, by = c("DateTime"), all.y = TRUE)
+oxy1$DATE <- as.Date(oxy1$DateTime)
+```
+
+Final data frame containing the DO and temp data at  5 minute time intervals
+
+```{r}
+interpDAT <- data.frame(DateTime = oxy1$DateTime, solar.time = oxy1$solar.time, DO.obs = oxy1$interpDO.y, Temp = oxy1$interpTemp.y, DATE = oxy1$DATE, Q = oxy1$interpQ.y, BP = oxy1$interpBP.y, wnd = oxy1$interpWND.y)
+
+daily <- dplyr::select(interpDAT, DATE, Q)
+daily <- daily %>% group_by(DATE) %>%
+  dplyr::summarise(discharge.daily = mean(Q)) %>% 
+  dplyr::rename(date = DATE)
+
+LakeMetabK <- dplyr::select(interpDAT, DATE, wnd)
+LakeMetabK <- LakeMetabK %>% group_by(DATE) %>%
+  dplyr::summarise(wnd = mean(wnd)) %>% 
+  dplyr::rename(datetime = DATE)
+
+u10 <- wind.scale.base(LakeMetabK$wnd, 3)
+LakeMetabK<- rmv.vars(LakeMetabK, 'wnd', ignore.offset=TRUE)
+
+
+LakeMetabK <- data.frame(datetime = LakeMetabK, wnd = u10)
+
+#KonzaWind10 <- dplyr::rename(KonzaWind10, wnd = y)
+#KonzaWind10 <- dplyr::rename(KonzaWind10, datetime = x)
+
+
+LakeMetabK <- k.cole(LakeMetabK)
+
+LakeMetabK <-  LakeMetabK %>%  dplyr::rename(K600.daily = k600)
+
+hist(LakeMetabK$K600.daily)
+hist(log(LakeMetabK$K600.daily))
+GasLog <- log(LakeMetabK$K600.daily)
+```
+
+```{r}
+#StreamMetabolizer func to calc DO saturation, using instread of AJU's code for simplicity
+
+interpDAT$DO.sat <- calc_DO_sat(
+  u(interpDAT$Temp, "degC"),
+  u(interpDAT$BP, "mb"),
+  salinity.water = u(0, "PSU"),
+  model = "garcia-benson"
+)
+
+#Ununits DO sat so we can graph it
+interpDAT$DO.sat <- deunitted(interpDAT$DO.sat)
+
+ggplot(interpDAT, aes(DateTime, DO.sat)) +
+  geom_line() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  theme_bw()
+```
+
+
+AJU's DO sat func.
+<!-- Calculate DO sat using DO and corrected BP -->
+<!-- ```{r} -->
+<!-- osat <- function(temp, bp) { -->
+<!--   sato <- (exp(2.00907 + 3.22014 * (log((298.15 - temp) / (273.15 + temp))) + 4.0501 * (log((298.15 - temp) / (273.15 + temp)))^2 + 4.94457 * (log((298.15 - temp) / (273.15 + temp)))^3 - 0.256847 * (log((298.15 - temp) / (273.15 + temp)))^4 + 3.88767 * (log((298.15 - temp) / (273.15 + temp)))^5)) * 1.4276 * bp / 760 -->
+<!--   DOsat <- sato -->
+<!--   return(DOsat) -->
+<!-- } -->
+
+<!-- all.DAT$DO.sat <- osat(temp = all.DAT$Temp, bp = all.DAT$BP) # adding a column of DO sat based on temp and BP to the data.frame -->
+
+<!-- # plotting DO sat by date to check the data -->
+<!-- ggplot(interpDAT) + -->
+<!--   geom_line(aes(DateTime, DO.sat, col = "DO saturation")) + -->
+<!--   geom_line(aes(DateTime, DO.obs, col = "DO observed")) + -->
+<!--   theme(axis.text.x = element_text(angle = 90, hjust = 1)) + -->
+<!--   scale_x_datetime(labels = date_format("%m/%d/%y %H:%M")) + -->
+<!--  # ylab(expression(paste(italic("DO"), " (mg L"^{ -->
+<!--   #  -1 -->
+<!--  # }, ")"))) + -->
+<!--   theme_bw() + -->
+<!--   theme(axis.text = element_text(size = 10), axis.title = element_text(size = 12), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.text = element_text(size = 8)) -->
+<!-- ``` -->
+Calculate depth (z) based on Raymond et al. 2012 L&O Fluids and Hyraulics, where ln(z) = 0.294 ln(Q) - 0.895 
+And then check by plotting depth vs date
+```{r}
+interpDAT$depth <- exp(0.294 * log(interpDAT$Q) - 0.895)
+
+ggplot(interpDAT, aes(DateTime, depth)) +
+  geom_line() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  scale_x_datetime(labels = date_format("%m/%d/%y %H:%M")) +
+  ylab(expression(paste(italic("z"), " (m)"))) +
+  theme_bw() +
+  theme(axis.text = element_text(size = 10), axis.title = element_text(size = 12), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), legend.text = element_text(size = 8))
+```
+Calc Light ##STOPPING HERE 20210908, NEED TO ADD LIGHT TO DF, LOOK AT STREAMPULSE MAN PAGES FOR MERGING CALC AND OBS LIGHT
+```{r}
+interpDAT$CalcLight <- calc_light(interpDAT$solar.time, latitude = (LatLong$Lat[LatLong$Site == "King"]), longitude =  (LatLong$Long[LatLong$Site == "King"]), max.PAR = u(2326, "umol m^-2 s^-1"), attach.units = is.unitted(interpDAT$solar.time))
+
+
+ggplot(interpDAT, aes(DateTime, CalcLight)) +
+  geom_line() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  theme_bw()
+
+
+
+interpDAT <- interpDAT %>%
+  left_join(kingPAR, by = "DateTime")
+
+interpDAT$Light[interpDAT$Light < .1] <- 0
+
+
+interpDAT<- interpDAT %>%
+  mutate(LightMerge = coalesce(Light, CalcLight))
+
+
+ggplot(interpDAT, aes(DateTime, LightMerge)) +
+  geom_line() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  theme_bw()
+
+
+
+```
+
+
+
+Clean up dataframe
+```{r}
+BackupDAT <- interpDAT
+
+interpDAT <- interpDAT[complete.cases(interpDAT),]
+
+dat <- interpDAT
+dat <- data.frame(solar.time = dat$solar.time, light = dat$LightMerge, DO.obs = dat$DO.obs, DO.sat = dat$DO.sat, depth = dat$depth, temp.water = dat$Temp)
+str(dat)
+
+
+dat$Date <- as.Date(dat$solar.time)
+
+dat_group <- dat %>%
+  group_by(Date) %>% 
+  dplyr::summarise(count = n())
+
+dat_rm2 <- subset(dat_group, (count != 288))
+
+
+dat <- dat %>% anti_join(dat_rm2)
+
+
+dat <- data.frame(solar.time = dat$solar.time, light = dat$light, DO.obs = dat$DO.obs, DO.sat = dat$DO.sat, depth = dat$depth, temp.water = dat$temp.water)
+```
+
+1. DO data 
+```{r}
+dat %>%
+  unitted::v() %>%
+  mutate(DO.pctsat = 100 * (DO.obs / DO.sat)) %>%
+  dplyr::select(solar.time, starts_with("DO")) %>%
+  gather(type, DO.value, starts_with("DO")) %>%
+  mutate(units = ifelse(type == "DO.pctsat", "DO\n(% sat)", "DO\n(mg/L)")) %>%
+  ggplot(aes(x = solar.time, y = DO.value, color = type)) +
+  geom_line() +
+  facet_grid(units ~ ., scale = "free_y") +
+  theme_bw() +
+  scale_color_discrete("variable")
+```
+
+2. water depth, light, and temp
+```{r}
+labels <- c(depth = "depth\n(m)", temp.water = "water temp\n(deg C)", light = "PAR\n(umol m^-2 s^-1)")
+dat %>%
+  unitted::v() %>%
+  dplyr::select(solar.time, depth, temp.water, light) %>%
+  gather(type, value, depth, temp.water, light) %>%
+  mutate(
+    type = ordered(type, levels = c("depth", "temp.water", "light")),
+    units = ordered(labels[type], unname(labels))
+  ) %>%
+  ggplot(aes(x = solar.time, y = value, color = type)) +
+  geom_line() +
+  facet_grid(units ~ ., scale = "free_y") +
+  theme_bw() +
+  scale_color_discrete("variable")
+```
+Lets only run a chunk of data
+```{r}
+
+rm(dat_group, dat_rm2, DOinterp, interpDAT, kingBP, kingPAR, kingQ, kingTemp, kingYSI, min.fill, oxy1, rawDAT)
+
+
+dat<-dat[149761:211392,]
+```
+
+FINALLY - some modelling of ecosystem metabolism
+
+As we do not have measurements of gas exchange (K or K600 (K600 = normalized to a Schmidt number of 600)), we will have to model gas-exchange along with GPP and ER
+
+There are several options to do this.
+
+1.  Night-time regression.  This assumes that the change in oxygen over the change in time regressed against the differnce in saturation and concentration right after dark is an approximation of gas-exchange (intercept is ER)  (for a clear explanation see Izagirre, O., Bermejo, M., Pozo, J., & Elosegi, A. (2007). RIVERMET©: An Excel-based tool to calculate river metabolism from diel oxygen–concentration curves. Environmental Modeling and Software, 22(1), 24–32. http://doi.org/10.1016/j.envsoft.2005.10.001))
+
+2. Allowing GPP, ER, and K float in the model -- that is using non-linear minimization (nlm) to minimize the negative log-likelihood, you can estimate K along with GPP and ER
+
+3. Predict K using night-time regression or nlm - feed back into a Kmodel along with daily Q and estimate K again.  This essentially 'smooths' out K and relates it to stream discharge (a common predictor of gas-exchange)
+
+4. Bayesian model approach. Similar to nlm, we can predict GPP, ER, and K.  There are many options with this - including allowing for the model to 'pool' the K's - which tend to have a more robust estimate of K.  However, this is time consuming and can take hours to a day to run a year of data.
+
+With this first round approach - I have implemented all 4 options  - which are explained below.
+
+1. night-time regression (using the metab_night function)
+```{r}
+#dat <- distinct(dat) # there are two rows with the same time stamp?
+#dat <- dat[-c(4170), ]
+mmn <- metab_night(data = dat)
+# predict_metab(mmn)
+plot_DO_preds(predict_DO(mmn)) # plots predicted (lines) and observed (points) DO
+
+nightk <- get_params(mmn) %>% dplyr::select(date, K600.daily)
+nightkQ <- merge(nightk, daily, by = c("date"))
+```
+
+2.  nlm fitting
+use model type 'mle' to estimate GPP, ER, and K
+
+
+```{r}
+mle_name <- mm_name(type = "mle")
+# mle_name
+mle_specs <- specs(mle_name) # want to set the specifications
+
+# want to fit the model
+mle_fit <- streamMetabolizer::metab(mle_specs, data = dat)
+# mle_fit
+```
+
+
+```{r}
+K600_mml <- get_params(mle_fit, uncertainty = "ci") %>% dplyr::select(date, K600.daily, K600.daily.lower, K600.daily.upper)
+```
+
+3.  Use the K predicted from nlm - along with stream discharge (Q) to estimate K on a daily basis based on stream Q
+
+```{r}
+daily2 <- merge(daily, K600_mml, by = c("date")) # using K600 as predicted from nlm above along with stream discharge - new data.frame to be fed into model below
+```
+
+the 'Kmodel' in streamMetabolizer - ONLY estimates gas-exchange
+
+With this  - -we are using stream discharge as the predictor, could also include velocity - and using linear model (also could use loess and mean)
+```{r}
+K600_mmm <- metab_Kmodel(
+  specs(mm_name("Kmodel", engine = "lm"), predictors = "discharge.daily"),
+  data_daily = daily2
+)
+K600_mm2 <- get_params(K600_mmm) %>% dplyr::select(date, K600.daily) # K600 estimated from nlm and Q relationship
+```
+
+For comparison of K600 estimated from night-time regression, nlm and from the Kmodel above
+```{r}
+plot(nightk$date, nightk$K600.daily, ylab = "K600 d-1", pch = 0, ylim = c(-40, 40)) # night-time regression K600
+points(K600_mml$date, K600_mml$K600.daily, pch = 1, col = "red") # mle or nlm K600
+points(K600_mm2$date, K600_mm2$K600.daily, pch = 3, col = "blue") # Kmodel, linear model with Q
+legend("bottomleft", pch = c(0, 1, 3), col = c("black", "red", "blue"), c("night-time k", "nlm k", "smooth k"))
+```
+
+Now that we have estimated gas-exchange -- we want to get at GPP and ER
+
+We will use the 'mle' model type (as above for the 2nd method of getting at K600)
+```{r}
+mle_name <- mm_name(type = "mle")
+# mle_name
+
+mle_specs <- specs(mle_name) # want to set the specifications
+# mle_specs
+```
+
+1.  using night-time regression estimates of gas-exchange to model GPP and ER
+```{r}
+mle_fit2 <- streamMetabolizer::metab(mle_specs, data = dat, data_daily = nightk) # running with night-time k estimates
+# get_specs(mle_fit2) #the specifications passed into the model
+plot_metab_preds(mle_fit2) # plotting GPP & ER predictions
+plot_DO_preds(mle_fit2) # plot the predicted and observed DO data
+met_preds2 <- predict_metab(mle_fit2) # table of the GPP & ER estimates
+# met_preds2
+```
+
+2.  using the K600 estimated from nlm model to predict GPP and ER
+```{r}
+# feed in only the daily estimates of K600 (not the upper or lower ci)
+K600_mml <- data.frame(date = K600_mml$date, K600.daily = K600_mml$K600.daily)
+```
+
+```{r}
+mle_fit3 <- metab(mle_specs, data = dat, data_daily = K600_mml) # K600 from nlm
+# get_specs(mle_fit3) #the specifications passed into the model
+plot_metab_preds(mle_fit3) # plotting GPP & ER predictions
+plot_DO_preds(mle_fit3) # plot the predicted and observed DO data
+met_preds3 <- predict_metab(mle_fit3) # table of the GPP & ER estimates
+# met_preds3
+```
+
+3.  using the K600 estimated from nlm K600 and Q to predict GPP and ER
+```{r}
+mle_fit4 <- metab(mle_specs, data = dat, data_daily = K600_mm2) # K600 from K600 estimated from nlm and regressed with Q
+# get_specs(mle_fit4) #the specifications passed into the model
+plot_metab_preds(mle_fit4) # plotting GPP & ER predictions
+plot_DO_preds(mle_fit4) # plot the predicted and observed DO data
+met_preds4 <- predict_metab(mle_fit4) # table of the GPP & ER estimates
+# met_preds4
+```
+
+
+Setting the Bayesian model, bayes takes a long time to run
+
+```{r}
+bayes_name <- mm_name(type='bayes', pool_K600='none')
+bayes_specs <- specs(bayes_name)
+#bayes_specs
+
+bayes_specs <- specs(bayes_name, burnin_steps=100, saved_steps=200, n_cores=2, GPP_daily_mu=3, GPP_daily_sigma=2) #running just a 'short' run to try out the model
+# another way: use revise() - up the number of iterations, using 'normal' pooled K600
+bayes_specs <- revise(bayes_specs, burnin_steps=1000, saved_steps=1000, n_cores=4, pool_K600='none', K600_daily_meanlog = 0.2359578)
+
+```
+And then running the model
+
+```{r}
+
+#dat <- dat[-c(2359:2503), ]
+
+mm <- metab(bayes_specs, data=dat)
+#mm
+```
+
+table of model predictions
+```{r}
+predict_metab(mm) %>%
+  lapply(function(col) if(is.numeric(col)) round(col, 2) else col ) %>%
+  as.data.frame() %>%
+  knitr::kable()
+
+```
+
+This code also gets you k600
+```{r}
+get_params(mm) %>%
+  lapply(function(col) if(is.numeric(col)) round(col, 2) else col ) %>%
+  as.data.frame() %>%
+  knitr::kable()
+```
+
+```{r}
+plot_DO_preds(mm)
+plot_metab_preds(mm) #plotting GPP & ER predictions
+```
+
+Saving model output
+```{r}
+mcmc <- get_mcmc(mm)
+rstan::traceplot(mcmc, pars='K600_daily', nrow=3)
+
+
+BayesKing <-get_params(mm, uncertaintiy = 'ci') %>% dplyr::select(date, GPP.daily, GPP.daily.sd, ER.daily, ER.daily.sd, K600.daily, K600.daily.sd)
+
+fwrite(BayesKing, "~/Dropbox/AIMS/KingsCreek/KingBaysAvgLakeK.csv")
+```
+
+Read in bays run
+```{r}
+#BayesKing <- fread("~/Dropbox/AIMS/KingsCreek/KingBays.csv")
+```
+
+
+Comparing the models (along with Q)
+```{r}
+par(mfcol = c(2,1), omi = c(0.2, 0.3, 0.2, .1), mai = c(0.5, 1.2, 0.05, 0.1), cex.lab = 1.2, cex.axis = 1.2)
+plot(met_preds2$date, met_preds2$GPP, pch = 0, ylim = c(0, 4), ylab = 'GPP \n(g O2 m-2 d-1)', xlab = "")
+points(met_preds3$date, met_preds3$GPP, col = 'red', pch = 1)
+points(met_preds4$date, met_preds4$GPP, col = 'blue', pch = 3)
+legend('topright', pch = c(0, 1, 3, 5), col = c('black', 'red', 'blue', 'darkgreen'), c('night-time k', 'nlm k', 'smooth k', 'Bayes'))
+
+plot(met_preds2$date, met_preds2$ER, pch = 0, ylim = c(-20, 0), ylab = 'ER \n(g O2 m-2 d-1)', xlab = "")
+points(met_preds3$date, met_preds3$ER, col = 'red', pch = 1)
+points(met_preds4$date, met_preds4$ER, col = 'blue', pch = 3)
+```
+
+Any data where GPP <0 or ER > 0 indicates the model did not work that day.
+
+This code gets rid of those days for a 'cleaned' up data set
+
+
+```{r}
+met_preds2 <- met_preds2[met_preds2$GPP > 0, ]
+met_preds3 <- met_preds3[met_preds3$GPP > 0, ]
+met_preds4 <- met_preds4[met_preds4$GPP > 0, ]
+BayesKing <- BayesKing[BayesKing$GPP.daily >0, ]
+
+met_preds2 <-met_preds2[met_preds2$ER < 0, ]
+met_preds3 <-met_preds3[met_preds3$ER < 0, ]
+met_preds4 <-met_preds4[met_preds4$ER < 0, ]
+BayesKing <- BayesKing[BayesKing$ER.daily < 0, ]
+
+
+#Also calculate NEP = GPP + ER
+met_preds2$NEP <- met_preds2$GPP + met_preds2$ER
+met_preds3$NEP <- met_preds3$GPP + met_preds3$ER
+met_preds4$NEP <- met_preds4$GPP + met_preds4$ER
+BayesKing$NEP <- BayesKing$GPP.daily + BayesKing$ER.daily
+```
+
+And plotting the 'cleaned up data for comparison
+
+```{r}
+par(mfcol = c(3,1), omi=c(0.2, 0.3, 0.2, .1), mai = c(0.5, 0.8, 0.05, 0.1), cex.lab = 1.2, cex.axis = 1.2)
+plot(met_preds2$date, met_preds2$GPP, pch = 0, ylim = c(0, 4), ylab = 'GPP \n(g O2 m-2 d-1)', xlab = "")
+points(met_preds3$date, met_preds3$GPP, col = 'red', pch = 1  )
+points(met_preds4$date, met_preds4$GPP, col = 'blue', pch = 3)
+points(BayesKing$date, BayesKing$GPP.daily, col = 'darkgreen', pch=5)
+legend('topleft', pch = c(0, 1, 3, 5), col = c('black', 'red', 'blue', 'darkgreen'), c('night-time k', 'nlm k', 'smooth k', 'Bayes'))
+
+plot(met_preds2$date, met_preds2$ER, pch = 0, ylim = c(-20, 0), ylab = 'ER \n(g O2 m-2 d-1)', xlab = "")
+points(met_preds3$date, met_preds3$ER, col = 'red', pch = 1)
+points(met_preds4$date, met_preds4$ER, col = 'blue', pch = 3)
+points(BayesKing$date, BayesKing$ER.daily, col = 'darkgreen', pch = 5)
+
+plot(met_preds2$date, met_preds2$NEP, pch = 0, ylim = c(-20, 10), ylab='NEP \n(g O2 m-2 d-1)', xlab = "")
+points(met_preds3$date, met_preds3$NEP, col = 'red', pch = 1)
+points(met_preds4$date, met_preds4$NEP, col = 'blue', pch = 3)
+points(BayesKing$date, BayesKing$NEP, col = 'darkgreen', pch = 5)
+abline(a = 0, b = 0)
+```
+In total, after removing dates where the model(s) did not appear to work, out of the approximately 350 potential days of metabolism
+
+Bayesian model = 299 'usable' days
+Night-time regression = 250 days
+nlm predicting K600 = 241 days
+'smoothing' K600 = 282 days
+
+
+```{r}
+par(mfcol = c(2,2))
+plot(ER~K600.daily, data = met_preds2, pch = 0, main = 'Night Time K') # night time K
+plot(ER~K600.daily, data = met_preds3, pch = 1, col = 'red', main = 'nlm K') # nlm K
+plot(ER~K600.daily, data = met_preds4, pch = 3, col = 'blue', main = 'nlm K~Q, smooth') # nlm K~Q
+#plot(ER~K600.daily, data=met_preds5, pch=15, col='green', main='nightK~Q') # night time K ~Q
+```
+
+```{r}
+GPPplot <- ggplot()+
+              theme_classic()+
+              theme(axis.title.x = element_blank(),
+              axis.text.x = element_blank(),
+              axis.ticks.x = element_blank(),
+              axis.line.x = element_blank())+
+               labs(y = expression("g O"[2]*" m"^{-2}* " d"^{-1}))+
+              ylab('GPP \n(g O2 m-2 d-1)')+
+              geom_point(data = BayesKing, aes(x = date, y = GPP.daily), shape = 5, color = "darkgreen")+
+              geom_point(data = met_preds2, aes(x = date, y = GPP), shape = 0, color = "black")+
+              geom_point(data = met_preds3, aes(x = date, y = GPP), shape = 1, color = "red")+
+              geom_point(data = met_preds4, aes(x = date, y = GPP), shape = 3, color = "blue")+
+              scale_x_date(NULL, date_labels = "%b %y", breaks = "2 months")+
+              ylim(0,4)
+
+ERplot <- ggplot()+
+              theme_classic()+
+              theme(axis.title.x = element_blank(),
+              axis.text.x = element_blank(),
+              axis.ticks.x = element_blank(),
+              axis.line.x = element_blank())+
+               labs(y = expression("g O"[2]*" m"^{-2}* " d"^{-1}))+
+              ylab('ER \n(g O2 m-2 d-1)')+
+              geom_point(data = BayesKing, aes(x = date, y = ER.daily), shape = 5, color = "darkgreen")+
+              geom_point(data = met_preds2, aes(x = date, y = ER), shape = 0, color = "black")+
+              geom_point(data = met_preds3, aes(x = date, y = ER), shape = 1, color = "red")+
+              geom_point(data = met_preds4, aes(x = date, y = ER), shape = 3, color = "blue")+
+              scale_x_date(NULL, date_labels = "%b %y", breaks = "2 months")+
+              ylim(-30, 0)
+
+NEPplot <- ggplot()+
+              theme_classic()+
+              theme(axis.title.x = element_blank())+
+               labs(y = expression("g O"[2]*" m"^{-2}* " d"^{-1}))+
+              ylab('NEP \n(g O2 m-2 d-1)')+
+              geom_abline(slope = 0, intercept = 0, linetype = 2, alpha = 0.2)+
+              geom_point(data = BayesKing, aes(x = date, y = NEP), shape = 5, color = "darkgreen")+
+              geom_point(data = met_preds2, aes(x = date, y = NEP), shape = 0, color = "black")+
+              geom_point(data = met_preds3, aes(x = date, y = NEP), shape = 1, color = "red")+
+              geom_point(data = met_preds4, aes(x = date, y = NEP), shape = 3, color = "blue")+
+              scale_x_date(NULL, date_labels = "%b %y", breaks = "2 months")+
+              ylim(-30, 0)
+
+
+ggarrange(GPPplot, ERplot, NEPplot, nrow = 3, align = "v")
+```
+
+
+```{r}
+BayesKing <- BayesKing[BayesKing$K600.daily < 30, ]
+BayesKing <- BayesKing[BayesKing$ER.daily > -30, ] # Probably not real days
+
+
+
+plot(ER.daily~K600.daily, data = BayesKing, ylab = 'ER g O2 m-2 d-1', xlab = 'K600 d-1', pch = 20, col = 'aquamarine4')
+summary(lm(ER.daily ~ K600.daily, data = BayesKing))
+```
+
+```{r}
+GPPplot <- ggplot()+
+              theme_classic()+
+              theme(axis.title.x = element_blank(),
+              axis.text.x = element_blank(),
+              axis.ticks.x = element_blank(),
+              axis.line.x = element_blank())+
+               labs(y = expression("g O"[2]*" m"^{-2}* " d"^{-1}))+
+              ylab('GPP \n(g O2 m-2 d-1)')+
+              geom_point(data = BayesKing, aes(x = date, y = GPP.daily), shape = 5, color = "darkgreen")+
+              scale_x_date(NULL, date_labels = "%b %y", breaks = "2 months")+
+              ylim(0,4)
+
+ERplot <- ggplot()+
+              theme_classic()+
+              theme(axis.title.x = element_blank(),
+              axis.text.x = element_blank(),
+              axis.ticks.x = element_blank(),
+              axis.line.x = element_blank())+
+               labs(y = expression("g O"[2]*" m"^{-2}* " d"^{-1}))+
+              ylab('ER \n(g O2 m-2 d-1)')+
+              geom_point(data = BayesKing, aes(x = date, y = ER.daily), shape = 5, color = "darkgreen")+
+              scale_x_date(NULL, date_labels = "%b %y", breaks = "2 months")+
+              ylim(-30, 0)
+
+NEPplot <- ggplot()+
+              theme_classic()+
+              theme(axis.title.x = element_blank())+
+               labs(y = expression("g O"[2]*" m"^{-2}* " d"^{-1}))+
+              ylab('NEP \n(g O2 m-2 d-1)')+
+              geom_abline(slope = 0, intercept = 0, linetype = 2, alpha = 0.2)+
+              geom_point(data = BayesKing, aes(x = date, y = NEP), shape = 5, color = "darkgreen")+
+              scale_x_date(NULL, date_labels = "%b %y", breaks = "2 months")+
+              ylim(-30, 0)
+
+
+ggarrange(GPPplot, ERplot, NEPplot, nrow = 3, align = "v")
+
+ggplot(BayesKing, aes(GPP.daily, ER.daily))+
+  geom_point(alpha = 0.5, color = "aquamarine4") +
+  geom_abline(slope = -1, intercept = 0)+
+  theme_base()+
+  theme(text=element_text(family="")) +
+  labs(x = expression("GPP (g O"[2]*" m"^{-2}* " d"^{-1}*")"), y = expression("ER (g O"[2]*" m"^{-2}* " d"^{-1}*")"))+
+  ggtitle("Kings Creek")
+```
+
+```{r}
+datefill <- function(df, date, Site){
+  alldays <- seq.Date(min(df$date), max(df$date), by= "day")
+  alldays <- data.frame(date = alldays)
+  df <- merge(alldays, df, by = "date", all.x = TRUE)
+}
+
+
+BayesKing <- datefill(BayesKing)
+
+
+
+ARGPP <- ggplot(BayesKing, aes(x = date))+
+  geom_line(aes(y = GPP.daily, color = "GPP"), show.legend = FALSE)+
+  #geom_point(aes(y = GPP.daily, color = "GPP"), show.legend = FALSE)+
+  #annotate("text", x = as.Date("2020-01-05"), y = 0.2, label = "GPP", size =8, color = "aquamarine4")+
+  scale_color_manual(values = "aquamarine4")+
+  ylim(0,2)+
+  theme_classic()+
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.text=element_text(size=15),
+        axis.title=element_text(size=12),
+        text=element_text(family="Times"))+
+  labs(y = NULL)
+
+ARER <- ggplot(BayesKing, aes(x = date))+
+  geom_line(aes(y = ER.daily, color = "ER"), show.legend = FALSE)+
+  #geom_point(aes(y = ER.daily, color = "ER"), show.legend = FALSE)+
+  #annotate("text", x = as.Date("2020-01-05"), y = -12.5, label = "ER", size =8, color = "brown4")+
+  scale_color_manual(values = "brown4")+
+  theme_classic()+
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank(),
+        axis.text=element_text(size=15),
+        axis.title=element_text(size=12),
+        text=element_text(family="Times"))+
+  labs(y = expression("g O"[2]*" m"^{-2}* " d"^{-1}))
+
+ARNEP <- ggplot(BayesKing, aes(x = date))+
+  geom_line(aes(y = NEP))+
+  ##geom_point(aes(y = NEP), show.legend = FALSE)+
+  #annotate("text", x = as.Date("2020-01-05"), y = -12.5, label = "NEP", size =8)+
+  geom_abline(slope = 0, intercept = 0, linetype = 2, alpha = 0.2)+
+  labs(x = NULL, y = NULL)+
+  #scale_x_date(breaks = pretty_breaks(3), limits = c(as.Date("2020-01-01"), as.Date("2021-03-22")))+
+  theme_classic()+
+  theme(axis.text=element_text(size=15), axis.title=element_text(size=12),
+        text=element_text(family="Times"))+
+  scale_x_date(NULL, date_labels = "%b%y", breaks = "2 months")
+
+ARStacked <- ggarrange(ARGPP, ARER, ARNEP, nrow = 3, align = "v")
+
+annotate_figure(ARStacked, top = "Kings Creek (NEON)")
+```
+
+
